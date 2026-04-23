@@ -13,7 +13,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _PCI_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$")
 _ENV_VAR_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)\}$")
+# File-level substitution: match ${VAR} anywhere in the YAML text, not just
+# as a whole-string value. Used by load_stagelab_config() to expand
+# placeholders before yaml.safe_load parses the document.
+_ENV_VAR_INLINE_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _SLUG_RE = re.compile(r"^[a-z0-9]+([-_][a-z0-9]+)*$")
+
+
+class StagelabConfigError(ValueError):
+    """Raised by load_stagelab_config() when env-var substitution or YAML
+    parsing fails in a way that's specific to the stagelab loader.
+
+    Pydantic ValidationError from the model still propagates unchanged so
+    callers can distinguish schema-level failures from loader-level ones.
+    """
 
 # TRex multiplier grammar: "<number><unit>" or "<percent>%".
 # Numbers: integer or decimal. Units (case-insensitive): bps, kbps, mbps,
@@ -1485,11 +1498,97 @@ class StagelabConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def load(path: "str | Path") -> StagelabConfig:
-    """Load and validate a stagelab YAML config file."""
-    with open(path) as fh:
-        data = yaml.safe_load(fh)
+def _substitute_env_vars(text: str, path: "str | Path") -> str:
+    """Replace every ``${VAR_NAME}`` occurrence in *text* with ``os.environ[VAR_NAME]``.
+
+    Substitution is textual and happens on the raw YAML document before
+    yaml.safe_load is called, so placeholders can appear anywhere — inside
+    quoted strings, inside URLs, inside IP addresses, inside PCI BDFs, etc.
+    Only identifiers matching ``[A-Z_][A-Z0-9_]*`` are considered placeholders;
+    any other ``$`` character is passed through untouched.
+
+    Pure-comment lines (the first non-whitespace character on the line is
+    ``#``) are passed through verbatim so templates can document the env
+    vars they use without requiring those vars to be set at load time.
+    Inline trailing comments (``key: value  # note``) are not stripped —
+    keep placeholders out of trailing comments on the same line.
+
+    No default values, no shell-style ``:-`` fallback: if a referenced env
+    var is unset a StagelabConfigError is raised naming the variable and the
+    config path, so missing config fails loudly rather than being silently
+    blank.
+    """
+    missing: list[str] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        varname = match.group(1)
+        value = os.environ.get(varname)
+        if value is None:
+            missing.append(varname)
+            return match.group(0)  # leave placeholder in place for error message
+        return value
+
+    out_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            out_lines.append(line)  # pure comment — pass through verbatim
+            continue
+        out_lines.append(_ENV_VAR_INLINE_RE.sub(_replace, line))
+    expanded = "".join(out_lines)
+
+    if missing:
+        # Deduplicate while preserving first-seen order.
+        seen: set[str] = set()
+        unique = [v for v in missing if not (v in seen or seen.add(v))]
+        joined = ", ".join(f"${{{v}}}" for v in unique)
+        raise StagelabConfigError(
+            f"required env var {joined} not set in {path}"
+        )
+    return expanded
+
+
+def load_stagelab_config(path: "str | Path") -> StagelabConfig:
+    """Load a stagelab YAML config file with ``${VAR}`` env-var substitution.
+
+    Pipeline:
+      1. Read *path* as text.
+      2. Replace every ``${VAR_NAME}`` placeholder with the corresponding
+         ``os.environ`` value. Substitution is file-wide: any placeholder in
+         the document is expanded, not just the SNMP community string.
+      3. Parse the expanded text with ``yaml.safe_load``.
+      4. Validate via ``StagelabConfig.model_validate``.
+
+    Raises:
+        StagelabConfigError: a referenced env var is unset, or the file
+            cannot be read / is not valid YAML.
+        pydantic.ValidationError: the document parses but fails schema
+            validation (propagated unchanged so callers can distinguish
+            loader- from schema-level failures).
+    """
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise StagelabConfigError(f"cannot read {path}: {exc}") from exc
+
+    expanded = _substitute_env_vars(text, path)
+
+    try:
+        data = yaml.safe_load(expanded)
+    except yaml.YAMLError as exc:
+        raise StagelabConfigError(f"YAML parse error in {path}: {exc}") from exc
+
     return StagelabConfig.model_validate(data)
+
+
+def load(path: "str | Path") -> StagelabConfig:
+    """Load and validate a stagelab YAML config file.
+
+    Thin back-compat wrapper around :func:`load_stagelab_config`; performs
+    the same file-level ``${VAR}`` env-var substitution.
+    """
+    return load_stagelab_config(path)
 
 
 def total_hugepages_per_host(cfg: StagelabConfig) -> dict[str, int]:
@@ -1554,7 +1653,9 @@ __all__ = [
     "MetricsSpec",
     "ReportSpec",
     "StagelabConfig",
+    "StagelabConfigError",
     "load",
+    "load_stagelab_config",
     "total_hugepages_per_host",
     "_is_dos_target_allowed",
 ]
