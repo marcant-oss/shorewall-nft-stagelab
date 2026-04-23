@@ -114,25 +114,27 @@ these CI gates — stagelab tests are no longer unit-only.
 
 ## Remote test host
 
-**192.0.2.73** — AlmaLinux 10, virtio-net NIC. Good for correctness smoke
-(`probe` mode) and `native` kernel-stack tests. Not suitable for DPDK
-line-rate testing (virtio-net is not line-rate with DPDK).
+The reference stagelab smoke host is a single AlmaLinux 10 box with a
+virtio-net NIC. virtio-net is good for correctness smoke (`probe` mode)
+and `native` kernel-stack tests, but not suitable for DPDK line-rate
+testing. Any Linux host with root ssh works — set
+`SHOREWALL_STAGELAB_HOST` to yours.
 
 Bootstrap:
 
 ```bash
 # stagelab-agent (kernel tests only):
-tools/setup-remote-test-host.sh root@192.0.2.73 --role stagelab-agent
+tools/setup-remote-test-host.sh root@${SHOREWALL_STAGELAB_HOST} --role stagelab-agent
 
 # stagelab-agent-dpdk (adds DPDK + TRex):
-STAGELAB_HUGEPAGES=512 tools/setup-remote-test-host.sh root@192.0.2.73 \
-    --role stagelab-agent-dpdk
+STAGELAB_HUGEPAGES=512 tools/setup-remote-test-host.sh \
+    root@${SHOREWALL_STAGELAB_HOST} --role stagelab-agent-dpdk
 ```
 
 Run a minimal smoke:
 
 ```bash
-ssh root@192.0.2.73 "cd /root/shorewall-nft && \
+ssh root@${SHOREWALL_STAGELAB_HOST} "cd /root/shorewall-nft && \
     .venv/bin/stagelab validate examples/stagelab-probe-smoke.yaml && \
     PYTHONUNBUFFERED=1 .venv/bin/stagelab run examples/stagelab-probe-smoke.yaml"
 ```
