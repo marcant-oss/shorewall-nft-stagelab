@@ -32,8 +32,8 @@ dependencies = [
     "jinja2>=3.1",
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "shorewall-nft-netkit>=1.8.0",
-    "shorewall-nft>=1.8.0",
+    "shorewall-nft-netkit>=1.10.0",
+    "shorewall-nft>=1.10.0",
 ]
 
 [project.optional-dependencies]

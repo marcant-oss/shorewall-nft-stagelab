@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
+
+      - name: Install packages
+        run: |
+          pip install "shorewall-nft>=1.10.0" "shorewall-nft-netkit>=1.10.0"
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v
+
+      - name: Run integration tests (no root)
+        run: |
+          pytest \
+            tests/integration/test_controller_local.py \
+            tests/integration/test_agent_roundtrip.py \
+            tests/integration/test_audit_cli.py \
+            tests/integration/test_stress_many_scenarios.py \
+            -v
